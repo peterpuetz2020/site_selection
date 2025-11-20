@@ -1,0 +1,26 @@
+{
+    "id": "C003AD95",
+    "path": "S:/Projekte/FG32_Abwassersurveillance/Daten/Amelag/Standortpaper/Scripts/plot_curves.R",
+    "project_path": "Scripts/plot_curves.R",
+    "type": "r_source",
+    "hash": "2478067587",
+    "contents": "",
+    "dirty": false,
+    "created": 1763621332844.0,
+    "source_on_save": false,
+    "relative_order": 4,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "202,0",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1763629984,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1763629984,
+    "read_only": false,
+    "read_only_alternatives": []
+}

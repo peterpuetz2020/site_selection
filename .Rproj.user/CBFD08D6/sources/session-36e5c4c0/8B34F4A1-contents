@@ -1,0 +1,11 @@
+df <- readRDS(here(read_data_here, "all_data.RDS")) %>% 
+
+
+
+Standortliste_merged <- read_excel("S:/Projekte/FG32_Abwassersurveillance/Daten/Amelag/Wochenbericht_alle_Erreger/Data/Standortliste_merged.xlsx") %>% 
+  dplyr::rename(uwwtd_code = uwwtd) %>% 
+  select(-BL)
+
+df %>% 
+  left_join(Standortliste_merged) %>% 
+  saveRDS(here(read_data_here, "all_data.RDS"))
