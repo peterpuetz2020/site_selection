@@ -4,104 +4,69 @@ if (!require("pacman"))
 # install (if not done yet) and load required packages and read in self-written
 # functions
 pacman::p_load(here, tidyverse)
-source(here("Scripts", "setup.R"), encoding = "UTF-8"
-)
+source(here("Scripts", "setup.R"), encoding = "UTF-8")
 
 # read full data
-df <- readRDS(here(read_data_here, "all_data.rds")) %>% 
-  mutate(Anfang_Probenahme = as.Date(Anfang_Probenahme),
-         logvalue = log10(value + 1),
-         loq = as.logical(below_lod)) %>% 
+df <- readRDS(here(read_data_here, "data.rds")) %>% 
+  mutate(date = as.Date(date),
+         log_viral_load = log10(viral_load + 1)) %>% 
   # filter more recent dates as only then enough WWTPS are available
-  filter(Anfang_Probenahme >= "2022-11-01",
-         Anfang_Probenahme <= "2024-07-15") %>% 
-  group_by(uwwtd_code) %>% 
+  filter(date >= "2022-10-15") %>% 
+  group_by(uwwtd) %>% 
   # add intermediate dates
   pad() %>% 
-  fill(Labor, Standort, Bundesland, .direction = "downup")
-  
-# read in sites that are still in amelag
-amelag_sites <-
-  import(here(read_data_here, "Standort-Übersicht_29.01.2025.xlsx"),
-         sheet = 1,
-         setclass = "tibble") %>% 
-  select(uwwtd_code = 'UWWTD-Code', amelag = 'AMELAG-finanziert') %>% 
-  drop_na()
-
-# select data from sites participating in 2025
-df_join <- 
-  df %>% 
-  left_join(amelag_sites) %>% 
-  # indicate 2025 selected sites
-  mutate(kept_sites = ifelse(is.na(amelag) | amelag == "nein", "nein", "ja")) %>% 
-  select(-amelag)
+  fill(lab, site_name, state, .direction = "downup") %>% 
+  ungroup() %>% 
+  arrange(date)
 
 # create aggregated data for wochenbericht html file
 # generate weeks starting on Thursday
 thursday_data <-
-  df_join %>%
-  distinct(Anfang_Probenahme) %>%
+  df %>%
+  distinct(date) %>%
   mutate(
-    Tag = lubridate::wday(Anfang_Probenahme, week_start = 1),
+    Tag = lubridate::wday(date, week_start = 1),
     is_thursday = ifelse(Tag == 4, 1, 0),
     th_week = cumsum(is_thursday)
   ) %>%
-  dplyr::select(Anfang_Probenahme, th_week)
+  dplyr::select(date, th_week)
 
-df_agg <- df_join %>%
-  left_join(thursday_data) %>% 
-  group_by(Standort) %>%
-  # complete data
-  mutate(loq = ifelse(is.na(logvalue),FALSE, loq)) %>%
-  ungroup() 
+df_agg <- df %>%
+  left_join(thursday_data)
 
 # add dates with NAs before samples to avoid that 7-days-averages
-# drop values if no previous dates are available
 new_rows <- df_agg %>%
-  group_by(Standort) %>%
-  summarise(min_date = min(Anfang_Probenahme, na.rm = TRUE), .groups = 'drop') %>%
-  # Create a sequence of dates for the 7 days before the minimum date
+  group_by(site_name) %>%
+  summarise(min_date = min(date, na.rm = TRUE), .groups = 'drop') %>%
   rowwise() %>%
-  do(data.frame(Standort = .$Standort, 
-                Anfang_Probenahme = seq(.$min_date - days(7), .$min_date - days(1), by = "day"))) %>%  # Set value to NA for new rows
+  do(data.frame(site_name = .$site_name, 
+                date = seq(.$min_date - days(7), .$min_date - days(1), by = "day"))) %>%  
   ungroup()
 
 # combine data
 df_agg <- bind_rows(df_agg, new_rows) %>% 
-  arrange(Standort, Anfang_Probenahme) %>% 
+  arrange(site_name, date) %>% 
   mutate(
-    KW = lubridate::week(Anfang_Probenahme),
-    Jahr = lubridate::year(Anfang_Probenahme)
+    KW = lubridate::week(date),
+    Jahr = lubridate::year(date)
   ) %>%
-  group_by(Standort, th_week) %>%
-  # for each site and virus, compute 7-day averages
-  mutate_at(vars(contains("value")), ~ mean(., na.rm = TRUE)) %>%
-  # remove missings
-  filter(!is.na(einwohner), !is.na(logvalue)) %>% 
-  # take only one value per week, site
-  filter(Anfang_Probenahme == max(Anfang_Probenahme, na.rm = TRUE)) %>%
-  ungroup() 
+  group_by(site_name, th_week) %>%
+  mutate_at(vars(contains("viral_load")), ~ mean(., na.rm = TRUE)) %>% 
+  filter(!is.na(pop_covered), !is.na(log_viral_load)) %>% 
+  filter(date == max(date, na.rm = TRUE)) %>%
+  ungroup()
 
 df_agg <- df_agg %>% 
-  # calculate unweighted means over the weeks as these unweighted means can be used
-  # to calculate differences between site/lab combination from these means - in this
-  # way, site/lab specific level regimes can be accounted for
   group_by(th_week) %>% 
-  mutate(mean_logvalue = mean(logvalue)) %>% 
+  mutate(mean_log_viral_load = mean(log_viral_load)) %>% 
   ungroup() %>% 
-  # calculate differences from these means
-  mutate(logvalue_dev = logvalue-mean_logvalue) %>% 
-  # average over these for each virus/site/lab combination
-  group_by(Standort, Labor) %>% 
-  mutate(logvalue_dev = mean(logvalue_dev)) %>% 
+  mutate(log_viral_load_dev = log_viral_load - mean_log_viral_load) %>% 
+  group_by(site_name, lab) %>% 
+  mutate(log_viral_load_dev = mean(log_viral_load_dev)) %>% 
   ungroup() %>% 
-  # adjust for deviations
-  mutate(logvalue = logvalue - logvalue_dev) %>% 
-  # drop variables
-  select(-mean_logvalue, -logvalue_dev) %>% 
-  # add day
-  mutate(Tag = lubridate::wday(Anfang_Probenahme, week_start = 1)
-)
+  mutate(log_viral_load = log_viral_load - log_viral_load_dev) %>% 
+  select(-mean_log_viral_load, -log_viral_load_dev) %>% 
+  mutate(Tag = lubridate::wday(date, week_start = 1))
 
 # Create an empty list as placeholder
 agg_list <- list()
@@ -109,38 +74,33 @@ agg_list <- list()
 # set seed for replicability
 set.seed(22)
 
-# compute (un-)weighted means over all sites for each pathogen
+# compute (un-)weighted means over all sites
 agg_list[[1]] <-
-    aggregation(df = df_agg,
-                weighting = TRUE) %>% 
-    mutate(all_sites = "ja")
-  
-# same only for amelag sites
-  agg_list[[2]] <-
-    aggregation(df = df_agg %>% filter(kept_sites == "ja"),
-                weighting = TRUE)  %>% 
-    mutate(all_sites = "nein")
-  
-  # combine datasets
-df_agg <- map_dfr(agg_list, bind_rows) %>%
-  # important
-  arrange(all_sites, Anfang_Probenahme)
+  aggregation(df = df_agg,
+              weighting = TRUE) %>% 
+  mutate(all_sites = "ja")
 
-# calculate loess estimates, see help(loess.as) for details of
-# the set options
+# same only for amelag sites
+agg_list[[2]] <-
+  aggregation(df = df_agg %>% filter(kept_sites == "ja"),
+              weighting = TRUE)  %>% 
+  mutate(all_sites = "nein")
+
+# combine datasets
+df_agg <- map_dfr(agg_list, bind_rows) %>%
+  arrange(all_sites, date)
+
+# calculate loess estimates
 pred <- df_agg %>%
   group_by(all_sites) %>%
   nest() %>%
-  mutate(pred = map(data, ~ predict(
+  mutate(pred = purrr::map(data, ~ predict(
     loess.as(
-      .x$obs[!is.na(.x$logvalue)],
-      .x$logvalue[!is.na(.x$logvalue)],
-      #criterion = "gcv",
-      #family = "symmetric",
+      .x$obs[!is.na(.x$log_viral_load)],
+      .x$log_viral_load[!is.na(.x$log_viral_load)],
       degree = 2,
-      weights = sqrt(.x$weights[!is.na(.x$logvalue)]),
-      #control = loess.control(surface = "direct")
-      user.span = .125
+      weights = sqrt(.x$weights[!is.na(.x$log_viral_load)]),
+      user.span = .13
     ),
     newdata = data.frame(x = .x$obs),
     se = TRUE))) %>%
@@ -157,7 +117,6 @@ reps <- df_agg %>%
   pull(n)
 
 df_agg <- df_agg %>%
-  # add columns relevant for predictions
   add_column(
     loess_optimized = extract_prediction(lis = pred_list, extract = "fit"),
     loess_optimized_se = extract_prediction(lis = pred_list, extract = "se.fit"),
@@ -166,64 +125,57 @@ df_agg <- df_agg %>%
       unlist()
   ) %>%
   mutate(
-    # add pointwise confidence bands
     loess_optimized_pw_lb = loess_optimized - qt(0.975, loess_optimized_df) *
       loess_optimized_se,
     loess_optimized_pw_ub = loess_optimized + qt(0.975, loess_optimized_df) *
       loess_optimized_se
   ) %>%
-  add_column(Standort = "Aggregiert") %>%
+  add_column(site_name = "Aggregiert") %>%
   dplyr::select(
-    Standort,
+    site_name,
     all_sites,
     n_non_na,
-    Anfang_Probenahme,
-    logvalue,
+    date,
+    log_viral_load,
     contains("loess_optimized"),
-    anteil_bev,
     -contains("d_df")
   ) %>%
-  # back-transform to original scale
   mutate_at(vars(contains("loess")), list(orig = ~ 10 ^ . - 1)) %>%
-  mutate(value = 10 ^ logvalue - 1)
+  mutate(viral_load = 10 ^ log_viral_load - 1)
+
+# compare width of confidence bands
+df_agg %>%  
+  mutate(width = loess_optimized_pw_ub_orig - loess_optimized_pw_lb_orig) %>% 
+  group_by(all_sites) %>% 
+  summarise(m = mean(width)) %>% 
+  mutate(ratio =  m[2] /  m[1])
 
 df_agg <- df_agg %>%
-  mutate_at(vars(value, contains("orig")), ~./1000)
+  mutate_at(vars(viral_load, contains("orig")), ~./1000)
 
 custom_labels <- c("ja" = "All sites", "nein" = "Sites selected for 2025")
-Sys.setlocale("LC_TIME", "C")  # Forces English for dates and times
+Sys.setlocale("LC_TIME", "C")
+
 p_trans <- df_agg %>%  
-  filter(!is.na(value)) %>% 
-  ggplot(aes(x = Anfang_Probenahme, y = value)) +
+  ggplot(aes(x = date, y = viral_load)) +
   geom_ribbon(
     aes(ymin = loess_optimized_pw_lb_orig, ymax = loess_optimized_pw_ub_orig),
-    # shadowing cnf intervals
-    fill = "lightblue"
+    fill = "lightblue",
+    linemitre = 200
   ) +
   geom_point(colour = "grey") +
-  geom_line(aes(Anfang_Probenahme, 
-                y = loess_optimized_orig),
-            linewidth = 1) +
-  geom_line(aes(Anfang_Probenahme, y = loess_optimized_pw_lb_orig),linewidth = 1, linetype = 0) +
-  geom_line(aes(Anfang_Probenahme, y = loess_optimized_pw_ub_orig),linewidth = 1, linetype = 0) +
+  geom_line(aes(date, 
+                y = loess_optimized_orig)) +
   facet_wrap(~all_sites, ncol = 1,
              labeller = labeller(all_sites = custom_labels)) +
-  theme_minimal() +
-  theme(
-    strip.text = element_text(size = 15),  # Increase facet title size
-    # Increase axis title size
-    axis.title.x = element_text(size = 14),
-    axis.title.y = element_text(size = 14),
-    # Increase axis tick label size
-    axis.text.x = element_text(size = 14),
-    axis.text.y = element_text(size = 14),
-  ) +
   scale_x_date(date_breaks = "2 month", 
-               date_labels = "%b %y") +
-  labs(y = expression(atop("Viral load in wastewater",atop(paste("in gene copies / liter (in thousand)")))), 
-       x = "Date")
+               date_labels = "%b \n%y", expand = c(0.05,0.05)) +
+  labs(y = expression(atop("Viral load in wastewater",
+                           atop(paste("in gene copies / liter (in thousand)")))), 
+       x = "Date") +
+  theme_palatino
+
 p_trans
 
-# compare average confidence band with
-ggsave(here(results_here, paste0("curves_compared.svg")), p_trans, width = 12, height = 8)
-ggsave(here(results_here, paste0("curves_compared.png")), p_trans, width = 12, height = 8)
+ggsave(here(results_here, paste0("curves_compared.png")), p_trans, width = 5.25, height = 3.5, dpi = 300)
+ggsave(here(results_here, paste0("curves_compared.svg")), p_trans, dpi = 300)
